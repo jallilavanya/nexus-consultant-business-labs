@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
@@ -62,6 +61,11 @@ type ScopeDelta = {
   out_of_scope_items: ScopeTask[];
 };
 
+type DeltaSection = {
+  title: string;
+  items: ScopeTask[];
+};
+
 const tabs: Tab[] = [
   "Knowledge Brain",
   "Inbox Agent",
@@ -81,6 +85,11 @@ const base = {
 };
 
 type NoticeSetter = (value: string) => void;
+
+async function getErrorMessage(response: Response): Promise<string> {
+  const body = await response.text();
+  return body || response.statusText || "Unknown server error";
+}
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("Knowledge Brain");
@@ -124,6 +133,7 @@ export default function Home() {
       <nav className="tabs" aria-label="Workspace tools">
         {tabs.map((item, index) => (
           <button
+            type="button"
             key={item}
             className={`tab ${tab === item ? "active" : ""}`}
             onClick={() => {
@@ -176,6 +186,7 @@ function KnowledgePanel({
     event.preventDefault();
     setBusy(true);
     setNotice("");
+    setResult(null);
 
     try {
       const response = await fetch(`${base.knowledge}/api/v1/query`, {
@@ -186,7 +197,7 @@ function KnowledgePanel({
 
       if (!response.ok) {
         throw new Error(
-          `Knowledge service returned ${response.status}`
+          `Knowledge service returned ${response.status}: ${await getErrorMessage(response)}`
         );
       }
 
@@ -227,7 +238,7 @@ function KnowledgePanel({
           minLength={2}
         />
 
-        <button className="primary" disabled={busy}>
+        <button className="primary" type="submit" disabled={busy}>
           {busy ? "Searching…" : "Ask the knowledge brain"}{" "}
           <span>↗</span>
         </button>
@@ -268,9 +279,9 @@ function KnowledgePanel({
 
                     <p>{source.excerpt}</p>
 
-                    {source.image_urls?.map((url) => (
+                    {source.image_urls?.map((url, imageIndex) => (
                       <img
-                        key={url}
+                        key={`${url}-${imageIndex}`}
                         src={url}
                         alt={`Help center screenshot from ${source.title}`}
                       />
@@ -309,7 +320,7 @@ function InboxPanel({
 
         if (!response.ok) {
           throw new Error(
-            `Inbox service returned ${response.status}`
+            `Inbox service returned ${response.status}: ${await getErrorMessage(response)}`
           );
         }
 
@@ -345,6 +356,7 @@ function InboxPanel({
     setBusy(true);
     setNotice("");
     setDraft("");
+    setConfidence(0);
     setClassification(null);
     setAuto(null);
 
@@ -360,15 +372,17 @@ function InboxPanel({
 
       if (!response.ok) {
         throw new Error(
-          `Inbox service returned ${response.status}`
+          `Inbox service returned ${response.status}: ${await getErrorMessage(response)}`
         );
       }
 
       const data = await response.json();
 
-      setDraft(data.reply);
-      setConfidence(data.confidence);
-      setClassification(data.classification);
+      setDraft(data.reply ?? "");
+      setConfidence(
+        typeof data.confidence === "number" ? data.confidence : 0
+      );
+      setClassification(data.classification ?? null);
 
       const intent = data.classification?.intent;
 
@@ -377,11 +391,9 @@ function InboxPanel({
           `${base.inbox}/auto-send/${encodeURIComponent(intent)}`
         );
 
-        setAuto(
-          status.ok
-            ? ((await status.json()) as AutoSendStatus)
-            : null
-        );
+        if (status.ok) {
+          setAuto((await status.json()) as AutoSendStatus);
+        }
       }
     } catch (error) {
       setNotice(
@@ -405,14 +417,15 @@ function InboxPanel({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          category:
-            classification?.intent ?? selected?.category ?? "",
+          category: classification?.intent ?? selected.category ?? "",
           action,
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Feedback failed (${response.status})`);
+        throw new Error(
+          `Feedback failed (${response.status}): ${await getErrorMessage(response)}`
+        );
       }
 
       setAuto((await response.json()) as AutoSendStatus);
@@ -453,6 +466,7 @@ function InboxPanel({
 
           {emailList.map((email) => (
             <button
+              type="button"
               className={`email-row ${
                 selected?.id === email.id ? "chosen" : ""
               }`}
@@ -461,7 +475,7 @@ function InboxPanel({
               disabled={busy}
             >
               <span className="email-avatar">
-                {email.subject[0]}
+                {email.subject[0] ?? "?"}
               </span>
 
               <span className="email-info">
@@ -529,6 +543,7 @@ function InboxPanel({
 
             <div className="action-buttons">
               <button
+                type="button"
                 className="secondary"
                 disabled={!selected || busy}
                 onClick={() => void feedback("overridden")}
@@ -537,6 +552,7 @@ function InboxPanel({
               </button>
 
               <button
+                type="button"
                 className="secondary"
                 disabled={!selected || busy}
                 onClick={() => void feedback("edited_and_sent")}
@@ -545,8 +561,9 @@ function InboxPanel({
               </button>
 
               <button
+                type="button"
                 className="primary"
-                disabled={!selected || busy}
+                disabled={!selected || busy || !draft.trim()}
                 onClick={() => void feedback("approved_unchanged")}
               >
                 Approve draft ↗
@@ -575,6 +592,8 @@ function ScopePanel({
     event.preventDefault();
     setBusy(true);
     setNotice("");
+    setScope(null);
+    setDelta(null);
 
     try {
       const response = await fetch(`${base.scope}/api/v1/scope`, {
@@ -588,12 +607,11 @@ function ScopePanel({
 
       if (!response.ok) {
         throw new Error(
-          `Scope service returned ${response.status}: ${await response.text()}`
+          `Scope service returned ${response.status}: ${await getErrorMessage(response)}`
         );
       }
 
       setScope((await response.json()) as ScopeResult);
-      setDelta(null);
     } catch (error) {
       setNotice(
         error instanceof Error
@@ -612,23 +630,21 @@ function ScopePanel({
 
     setBusy(true);
     setNotice("");
+    setDelta(null);
 
     try {
-      const response = await fetch(
-        `${base.scope}/api/v1/scope/delta`,
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            baseline: scope.tasks,
-            follow_up_transcript: followup,
-          }),
-        }
-      );
+      const response = await fetch(`${base.scope}/api/v1/scope/delta`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          baseline: scope.tasks,
+          follow_up_transcript: followup,
+        }),
+      });
 
       if (!response.ok) {
         throw new Error(
-          `Scope comparison failed (${response.status}): ${await response.text()}`
+          `Scope comparison failed (${response.status}): ${await getErrorMessage(response)}`
         );
       }
 
@@ -643,6 +659,27 @@ function ScopePanel({
       setBusy(false);
     }
   }
+
+  const deltaSections: DeltaSection[] = delta
+    ? [
+        {
+          title: "New Tasks",
+          items: delta.new_tasks,
+        },
+        {
+          title: "Modified Tasks",
+          items: delta.modified_tasks.map((item) => item.after),
+        },
+        {
+          title: "Removed Tasks",
+          items: delta.removed_tasks,
+        },
+        {
+          title: "Out-of-Scope · Extra Cost",
+          items: delta.out_of_scope_items,
+        },
+      ]
+    : [];
 
   return (
     <section className="panel">
@@ -679,10 +716,8 @@ function ScopePanel({
           />
         </label>
 
-        <button className="primary" disabled={busy}>
-          {busy
-            ? "Analyzing…"
-            : "Generate statement of work ↗"}
+        <button className="primary" type="submit" disabled={busy}>
+          {busy ? "Analyzing…" : "Generate statement of work ↗"}
         </button>
       </form>
 
@@ -696,9 +731,7 @@ function ScopePanel({
 
             <div>
               <span>ESTIMATED SERVICES</span>
-              <strong>
-                ${Number(scope.total_cost).toLocaleString()}
-              </strong>
+              <strong>${Number(scope.total_cost).toLocaleString()}</strong>
             </div>
 
             <div>
@@ -752,43 +785,32 @@ function ScopePanel({
               />
             </label>
 
-            <button className="secondary" disabled={busy}>
-              Compare against baseline
+            <button
+              type="submit"
+              className="secondary"
+              disabled={busy || !scope}
+            >
+              {busy ? "Processing…" : "Compare against baseline"}
             </button>
           </form>
 
           {delta && (
             <div className="delta-grid">
-              {[
-                ["New Tasks", delta.new_tasks],
-                [
-                  "Modified Tasks",
-                  delta.modified_tasks.map((item) => item.after),
-                ],
-                ["Removed Tasks", delta.removed_tasks],
-                [
-                  "Out-of-Scope · Extra Cost",
-                  delta.out_of_scope_items,
-                ],
-              ].map(([title, items]) => {
-                const taskItems = items as ScopeTask[];
+              {deltaSections.map(({ title, items }) => (
+                <article className="delta-card" key={title}>
+                  <h4>{title}</h4>
 
-                return (
-                  <article className="delta-card" key={title as string}>
-                    <h4>{title}</h4>
-
-                    {taskItems.length ? (
-                      taskItems.map((item, index) => (
-                        <p key={`${item.title}-${index}`}>
-                          {item.title}
-                        </p>
-                      ))
-                    ) : (
-                      <p className="muted">No changes</p>
-                    )}
-                  </article>
-                );
-              })}
+                  {items.length > 0 ? (
+                    items.map((item, index) => (
+                      <p key={`${item.title}-${index}`}>
+                        {item.title}
+                      </p>
+                    ))
+                  ) : (
+                    <p className="muted">No changes</p>
+                  )}
+                </article>
+              ))}
             </div>
           )}
         </div>
