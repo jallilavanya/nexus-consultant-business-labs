@@ -1,0 +1,64 @@
+services:
+  knowledge-brain:
+    build:
+      context: .
+      dockerfile: task1_knowledge_brain/Dockerfile
+    environment:
+      CHROMA_PATH: /app/data/chroma
+      ENABLE_DAILY_CRAWL: ${ENABLE_DAILY_CRAWL:-false}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_VISION_MODEL: ${ANTHROPIC_VISION_MODEL:-claude-3-5-sonnet-latest}
+      CORS_ORIGINS: http://localhost:3000
+    volumes:
+      - knowledge_data:/app/data
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+
+  inbox-agent:
+    build:
+      context: .
+      dockerfile: task2_inbox_agent/Dockerfile
+    environment:
+      PORT: 8002
+      KNOWLEDGE_API_URL: http://knowledge-brain:8001
+    ports:
+      - "8002:8002"
+    depends_on:
+      knowledge-brain:
+        condition: service_healthy
+
+  meeting-scope:
+    build:
+      context: .
+      dockerfile: task3_meeting_scope/Dockerfile
+    environment:
+      KNOWLEDGE_API_URL: http://knowledge-brain:8001
+      HOURLY_RATE: ${HOURLY_RATE:-125}
+      CORS_ORIGINS: http://localhost:3000
+    ports:
+      - "8003:8003"
+    depends_on:
+      knowledge-brain:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      NEXT_PUBLIC_KNOWLEDGE_API_URL: http://localhost:8001
+      NEXT_PUBLIC_INBOX_API_URL: http://localhost:8002/api/v1
+      NEXT_PUBLIC_SCOPE_API_URL: http://localhost:8003
+    ports:
+      - "3000:3000"
+    depends_on:
+      - inbox-agent
+      - meeting-scope
+
+volumes:
+  knowledge_data:
