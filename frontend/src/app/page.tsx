@@ -2,11 +2,71 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import type { FormEvent } from "react";
 
 type Tab = "Knowledge Brain" | "Inbox Agent" | "Scope Engine";
-type Email = { id: number; category: string; subject: string; body: string };
 
-const tabs: Tab[] = ["Knowledge Brain", "Inbox Agent", "Scope Engine"];
+type Email = {
+  id: number;
+  category: string;
+  subject: string;
+  body: string;
+};
+
+type Source = {
+  article_url: string;
+  title: string;
+  excerpt: string;
+  image_urls?: string[];
+};
+
+type KnowledgeResult = {
+  answer: string;
+  confidence: number;
+  sources?: Source[];
+};
+
+type Classification = {
+  intent: string;
+};
+
+type AutoSendStatus = {
+  auto_send_enabled?: boolean;
+  [key: string]: unknown;
+};
+
+type ScopeTask = {
+  title: string;
+  product_fit: string;
+  complexity: string;
+  estimated_hours: number;
+  cost: number;
+};
+
+type ScopeResult = {
+  total_hours: number;
+  total_cost: number;
+  tasks: ScopeTask[];
+  proposal_markdown: string;
+};
+
+type ModifiedTask = {
+  before?: ScopeTask;
+  after: ScopeTask;
+};
+
+type ScopeDelta = {
+  new_tasks: ScopeTask[];
+  modified_tasks: ModifiedTask[];
+  removed_tasks: ScopeTask[];
+  out_of_scope_items: ScopeTask[];
+};
+
+const tabs: Tab[] = [
+  "Knowledge Brain",
+  "Inbox Agent",
+  "Scope Engine",
+];
 
 const base = {
   knowledge:
@@ -19,6 +79,8 @@ const base = {
     process.env.NEXT_PUBLIC_SCOPE_API_URL ??
     "http://localhost:8003",
 };
+
+type NoticeSetter = (value: string) => void;
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("Knowledge Brain");
@@ -81,9 +143,17 @@ export default function Home() {
         </div>
       )}
 
-      {tab === "Knowledge Brain" && <KnowledgePanel setNotice={setNotice} />}
-      {tab === "Inbox Agent" && <InboxPanel setNotice={setNotice} />}
-      {tab === "Scope Engine" && <ScopePanel setNotice={setNotice} />}
+      {tab === "Knowledge Brain" && (
+        <KnowledgePanel setNotice={setNotice} />
+      )}
+
+      {tab === "Inbox Agent" && (
+        <InboxPanel setNotice={setNotice} />
+      )}
+
+      {tab === "Scope Engine" && (
+        <ScopePanel setNotice={setNotice} />
+      )}
 
       <footer>
         BUILT FOR BETTER WORK{" "}
@@ -96,13 +166,13 @@ export default function Home() {
 function KnowledgePanel({
   setNotice,
 }: {
-  setNotice: (value: string) => void;
+  setNotice: NoticeSetter;
 }) {
   const [question, setQuestion] = useState("");
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<KnowledgeResult | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function ask(event: React.FormEvent) {
+  async function ask(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setNotice("");
@@ -115,10 +185,12 @@ function KnowledgePanel({
       });
 
       if (!response.ok) {
-        throw new Error(`Knowledge service returned ${response.status}`);
+        throw new Error(
+          `Knowledge service returned ${response.status}`
+        );
       }
 
-      setResult(await response.json());
+      setResult((await response.json()) as KnowledgeResult);
     } catch (error) {
       setNotice(
         error instanceof Error
@@ -145,6 +217,7 @@ function KnowledgePanel({
 
       <form className="ask-box" onSubmit={ask}>
         <label htmlFor="question">What would you like to know?</label>
+
         <textarea
           id="question"
           value={question}
@@ -153,8 +226,10 @@ function KnowledgePanel({
           required
           minLength={2}
         />
+
         <button className="primary" disabled={busy}>
-          {busy ? "Searching…" : "Ask the knowledge brain"} <span>↗</span>
+          {busy ? "Searching…" : "Ask the knowledge brain"}{" "}
+          <span>↗</span>
         </button>
       </form>
 
@@ -172,8 +247,9 @@ function KnowledgePanel({
           {!!result.sources?.length && (
             <div className="sources">
               <h3>Sources &amp; visual evidence</h3>
+
               <div className="source-grid">
-                {result.sources.map((source: any, index: number) => (
+                {result.sources.map((source, index) => (
                   <article
                     className="source-card"
                     key={`${source.article_url}-${index}`}
@@ -181,6 +257,7 @@ function KnowledgePanel({
                     <div className="source-number">
                       SOURCE 0{index + 1}
                     </div>
+
                     <a
                       href={source.article_url}
                       target="_blank"
@@ -188,9 +265,10 @@ function KnowledgePanel({
                     >
                       {source.title} ↗
                     </a>
+
                     <p>{source.excerpt}</p>
 
-                    {source.image_urls?.map((url: string) => (
+                    {source.image_urls?.map((url) => (
                       <img
                         key={url}
                         src={url}
@@ -211,43 +289,64 @@ function KnowledgePanel({
 function InboxPanel({
   setNotice,
 }: {
-  setNotice: (value: string) => void;
+  setNotice: NoticeSetter;
 }) {
   const [emailList, setEmailList] = useState<Email[]>([]);
   const [selected, setSelected] = useState<Email | null>(null);
   const [draft, setDraft] = useState("");
   const [confidence, setConfidence] = useState(0);
-  const [classification, setClassification] = useState<any>(null);
-  const [auto, setAuto] = useState<any>(null);
+  const [classification, setClassification] =
+    useState<Classification | null>(null);
+  const [auto, setAuto] = useState<AutoSendStatus | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    fetch(`${base.inbox}/emails`)
-      .then(async (response) => {
+    let cancelled = false;
+
+    async function loadEmails() {
+      try {
+        const response = await fetch(`${base.inbox}/emails`);
+
         if (!response.ok) {
-          throw new Error(`Inbox service returned ${response.status}`);
+          throw new Error(
+            `Inbox service returned ${response.status}`
+          );
         }
 
         const data = (await response.json()) as Email[];
+
+        if (cancelled) return;
+
         setEmailList(data);
 
-        if (data.length) {
+        if (data.length > 0) {
           setSelected(data[0]);
         }
-      })
-      .catch((error) =>
-        setNotice(
-          error instanceof Error
-            ? error.message
-            : "Could not load sample emails."
-        )
-      );
+      } catch (error) {
+        if (!cancelled) {
+          setNotice(
+            error instanceof Error
+              ? error.message
+              : "Could not load sample emails."
+          );
+        }
+      }
+    }
+
+    void loadEmails();
+
+    return () => {
+      cancelled = true;
+    };
   }, [setNotice]);
 
   async function createDraft(email: Email) {
     setSelected(email);
     setBusy(true);
     setNotice("");
+    setDraft("");
+    setClassification(null);
+    setAuto(null);
 
     try {
       const response = await fetch(`${base.inbox}/draft`, {
@@ -260,7 +359,9 @@ function InboxPanel({
       });
 
       if (!response.ok) {
-        throw new Error(`Inbox service returned ${response.status}`);
+        throw new Error(
+          `Inbox service returned ${response.status}`
+        );
       }
 
       const data = await response.json();
@@ -269,13 +370,19 @@ function InboxPanel({
       setConfidence(data.confidence);
       setClassification(data.classification);
 
-      const status = await fetch(
-        `${base.inbox}/auto-send/${encodeURIComponent(
-          data.classification.intent
-        )}`
-      );
+      const intent = data.classification?.intent;
 
-      setAuto(status.ok ? await status.json() : null);
+      if (intent) {
+        const status = await fetch(
+          `${base.inbox}/auto-send/${encodeURIComponent(intent)}`
+        );
+
+        setAuto(
+          status.ok
+            ? ((await status.json()) as AutoSendStatus)
+            : null
+        );
+      }
     } catch (error) {
       setNotice(
         error instanceof Error
@@ -288,21 +395,27 @@ function InboxPanel({
   }
 
   async function feedback(action: string) {
+    if (!selected) {
+      setNotice("Select an email before submitting feedback.");
+      return;
+    }
+
     try {
       const response = await fetch(`${base.inbox}/feedback`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-  category: classification?.intent ?? selected?.category ?? "",
-  action,
-}),
+          category:
+            classification?.intent ?? selected?.category ?? "",
+          action,
+        }),
       });
 
       if (!response.ok) {
         throw new Error(`Feedback failed (${response.status})`);
       }
 
-      setAuto(await response.json());
+      setAuto((await response.json()) as AutoSendStatus);
 
       setNotice(
         action === "approved_unchanged"
@@ -344,9 +457,12 @@ function InboxPanel({
                 selected?.id === email.id ? "chosen" : ""
               }`}
               key={email.id}
-              onClick={() => createDraft(email)}
+              onClick={() => void createDraft(email)}
+              disabled={busy}
             >
-              <span className="email-avatar">{email.subject[0]}</span>
+              <span className="email-avatar">
+                {email.subject[0]}
+              </span>
 
               <span className="email-info">
                 <b>{email.subject}</b>
@@ -363,6 +479,7 @@ function InboxPanel({
               <span className="eyebrow">CUSTOMER MESSAGE</span>
               <h3>{selected?.subject ?? "Choose an email"}</h3>
             </div>
+
             <span className="confidence">
               AI confidence {Math.round(confidence * 100)}%
             </span>
@@ -402,6 +519,7 @@ function InboxPanel({
                   auto?.auto_send_enabled ? "live-dot" : "grey-dot"
                 }
               />
+
               Auto-send{" "}
               {auto?.auto_send_enabled
                 ? "enabled"
@@ -412,24 +530,24 @@ function InboxPanel({
             <div className="action-buttons">
               <button
                 className="secondary"
-                disabled={!selected}
-                onClick={() => feedback("overridden")}
+                disabled={!selected || busy}
+                onClick={() => void feedback("overridden")}
               >
                 Manual reply
               </button>
 
               <button
                 className="secondary"
-                disabled={!selected}
-                onClick={() => feedback("edited_and_sent")}
+                disabled={!selected || busy}
+                onClick={() => void feedback("edited_and_sent")}
               >
                 Edit &amp; send
               </button>
 
               <button
                 className="primary"
-                disabled={!selected}
-                onClick={() => feedback("approved_unchanged")}
+                disabled={!selected || busy}
+                onClick={() => void feedback("approved_unchanged")}
               >
                 Approve draft ↗
               </button>
@@ -444,16 +562,16 @@ function InboxPanel({
 function ScopePanel({
   setNotice,
 }: {
-  setNotice: (value: string) => void;
+  setNotice: NoticeSetter;
 }) {
   const [transcript, setTranscript] = useState("");
   const [client, setClient] = useState("Acme Directory");
-  const [scope, setScope] = useState<any>(null);
+  const [scope, setScope] = useState<ScopeResult | null>(null);
   const [followup, setFollowup] = useState("");
-  const [delta, setDelta] = useState<any>(null);
+  const [delta, setDelta] = useState<ScopeDelta | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function generate(event: React.FormEvent) {
+  async function generate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setNotice("");
@@ -474,7 +592,7 @@ function ScopePanel({
         );
       }
 
-      setScope(await response.json());
+      setScope((await response.json()) as ScopeResult);
       setDelta(null);
     } catch (error) {
       setNotice(
@@ -487,22 +605,26 @@ function ScopePanel({
     }
   }
 
-  async function compare(event: React.FormEvent) {
+  async function compare(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
     if (!scope) return;
 
     setBusy(true);
+    setNotice("");
 
     try {
-      const response = await fetch(`${base.scope}/api/v1/scope/delta`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          baseline: scope.tasks,
-          follow_up_transcript: followup,
-        }),
-      });
+      const response = await fetch(
+        `${base.scope}/api/v1/scope/delta`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            baseline: scope.tasks,
+            follow_up_transcript: followup,
+          }),
+        }
+      );
 
       if (!response.ok) {
         throw new Error(
@@ -510,7 +632,7 @@ function ScopePanel({
         );
       }
 
-      setDelta(await response.json());
+      setDelta((await response.json()) as ScopeDelta);
     } catch (error) {
       setNotice(
         error instanceof Error
@@ -542,6 +664,7 @@ function ScopePanel({
           <input
             value={client}
             onChange={(event) => setClient(event.target.value)}
+            required
           />
         </label>
 
@@ -599,7 +722,7 @@ function ScopePanel({
               </thead>
 
               <tbody>
-                {scope.tasks.map((task: any, index: number) => (
+                {scope.tasks.map((task, index) => (
                   <tr key={`${task.title}-${index}`}>
                     <td>{task.title}</td>
                     <td>{task.product_fit}</td>
@@ -640,23 +763,32 @@ function ScopePanel({
                 ["New Tasks", delta.new_tasks],
                 [
                   "Modified Tasks",
-                  delta.modified_tasks.map((item: any) => item.after),
+                  delta.modified_tasks.map((item) => item.after),
                 ],
                 ["Removed Tasks", delta.removed_tasks],
-                ["Out-of-Scope · Extra Cost", delta.out_of_scope_items],
-              ].map(([title, items]: any) => (
-                <article className="delta-card" key={title}>
-                  <h4>{title}</h4>
+                [
+                  "Out-of-Scope · Extra Cost",
+                  delta.out_of_scope_items,
+                ],
+              ].map(([title, items]) => {
+                const taskItems = items as ScopeTask[];
 
-                  {items.length ? (
-                    items.map((item: any, index: number) => (
-                      <p key={index}>{item.title}</p>
-                    ))
-                  ) : (
-                    <p className="muted">No changes</p>
-                  )}
-                </article>
-              ))}
+                return (
+                  <article className="delta-card" key={title as string}>
+                    <h4>{title}</h4>
+
+                    {taskItems.length ? (
+                      taskItems.map((item, index) => (
+                        <p key={`${item.title}-${index}`}>
+                          {item.title}
+                        </p>
+                      ))
+                    ) : (
+                      <p className="muted">No changes</p>
+                    )}
+                  </article>
+                );
+              })}
             </div>
           )}
         </div>
