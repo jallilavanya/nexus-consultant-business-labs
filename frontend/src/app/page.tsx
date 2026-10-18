@@ -293,11 +293,9 @@ function InboxPanel({
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          // FIX: selected can be null, so use optional chaining.
-          category:
-            classification?.intent ?? selected?.category ?? "",
-          action,
-        }),
+  category: classification?.intent ?? selected?.category ?? "",
+  action,
+}),
       });
 
       if (!response.ok) {
